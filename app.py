@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import wfdb
 import numpy as np
