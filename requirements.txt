@@ -9,3 +9,5 @@ imbalanced-learn==0.10.1
 shap==0.41.0
 matplotlib==3.7.2
 scipy==1.11.1
+seaborn==0.12.2   # optional: if you use seaborn in plots
+
