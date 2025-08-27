@@ -2,12 +2,13 @@ streamlit==1.29.0
 wfdb==4.1.2
 numpy==1.24.3
 pandas==2.0.3
-scikit-learn==1.3.0
+scikit-learn==1.5.1      # 🔼 updated
 xgboost==2.0.0
 tensorflow==2.15.0
-imbalanced-learn==0.10.1
+imbalanced-learn==0.12.3 # 🔼 latest stable
 shap==0.41.0
 matplotlib==3.7.2
 scipy==1.11.1
-seaborn==0.12.2   # optional: if you use seaborn in plots
+seaborn==0.12.2
+
 
