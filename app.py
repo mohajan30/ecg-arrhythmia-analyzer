@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import wfdb
 import numpy as np
@@ -21,7 +22,7 @@ import os
 
 # Streamlit app title and description
 st.title("ECG Arrhythmia Analyzer")
-st.write("Upload MIT-BIH .dat and .atr files to analyze ECG arrhythmias, compute burden, assess disease risks, and view ML model explanations.")
+st.write("Upload MIT-BIH .dat, .atr, and optionally .hea files to analyze ECG arrhythmias, compute burden, assess disease risks, and view ML model explanations.")
 
 # Parameters
 WINDOW = 256
@@ -149,9 +150,14 @@ def assign_disease_zone(disease, counts, total_beats, duration_hours):
 
 def load_record(record_path, win=WINDOW):
     try:
+        # Check if .hea file exists; create a minimal one if not
+        hea_path = f"{record_path}.hea"
+        if not os.path.exists(hea_path):
+            with open(hea_path, 'w') as f:
+                f.write(f"{record_path} 1 360 {win}\n")  # Minimal header: 1 channel, 360 Hz
         rec = wfdb.rdrecord(record_path)
         ann = wfdb.rdann(record_path, "atr")
-        ecg = bandpass(rec.p_signal[:, 0])
+        ecg = bandpass(rec.p_signal[:, 0], fs=360)  # Use first channel
         beats, labels = [], []
         for pos, sym in zip(ann.sample, ann.symbol):
             cls = sym2cls.get(sym, 'Q')
@@ -161,6 +167,9 @@ def load_record(record_path, win=WINDOW):
                 seg = np.pad(seg, (0, win - len(seg)), mode='constant')
             beats.append(seg)
             labels.append(cls)
+        # Clean up generated .hea file
+        if os.path.exists(hea_path):
+            os.remove(hea_path)
         return np.asarray(beats), np.asarray(labels)
     except Exception as e:
         st.error(f"Error processing ECG: {e}")
@@ -170,18 +179,22 @@ def load_record(record_path, win=WINDOW):
 st.subheader("Upload ECG Files")
 dat_file = st.file_uploader("Upload .dat file (ECG signal)", type=["dat"])
 atr_file = st.file_uploader("Upload .atr file (Annotations)", type=["atr"])
+hea_file = st.file_uploader("Upload .hea file (Header, optional)", type=["hea"])
 
 if dat_file and atr_file:
     # Validate file names
+    record_name = dat_file.name.split(".")[0]
     if dat_file.name.split(".")[0] != atr_file.name.split(".")[0]:
         st.error("Uploaded .dat and .atr files must have the same record name (e.g., 114.dat and 114.atr).")
     else:
-        # Save uploaded files temporarily
-        record_name = dat_file.name.split(".")[0]
+        # Save uploaded files
         with open(f"{record_name}.dat", "wb") as f:
             f.write(dat_file.read())
         with open(f"{record_name}.atr", "wb") as f:
             f.write(atr_file.read())
+        if hea_file:
+            with open(f"{record_name}.hea", "wb") as f:
+                f.write(hea_file.read())
 
         # Step 1: Burden Analysis
         st.subheader("Burden Analysis")
@@ -218,64 +231,70 @@ if dat_file and atr_file:
         st.dataframe(df_diseases.style.apply(hilite_zone, axis=1))
         st.download_button("Download Disease Table", df_diseases.to_csv(index=False), f"diseases_{record_name}.csv")
 
-        # Step 3: ML Classification (XGBoost as example)
+        # Step 3: ML Classification (XGBoost)
         st.subheader("Machine Learning Classification (XGBoost)")
-        X_raw, y_raw = load_record(record_name)
-        if len(X_raw) == 0:
-            st.error("Failed to load ECG data for ML analysis.")
-        else:
-            X_ds = resample(X_raw, 32, axis=1)
-            scaler = StandardScaler()
-            X_ds = scaler.fit_transform(X_ds)
-            X_tr, X_te, y_tr, y_te = train_test_split(X_ds, y_raw, test_size=0.3, stratify=y_raw, random_state=RANDOM)
-            
-            # SMOTE Balancing
-            cnt = Counter(y_tr)
-            m = min(cnt.values())
-            if m < 2:
-                X_tr_bal, y_tr_bal = X_tr, y_tr
+        try:
+            X_raw, y_raw = load_record(record_name)
+            if len(X_raw) == 0:
+                st.error("Failed to load ECG data for ML analysis.")
             else:
-                k = max(1, min(5, m-1))
-                X_tr_bal, y_tr_bal = SMOTE(k_neighbors=k, random_state=RANDOM).fit_resample(X_tr, y_tr)
-            
-            # Train XGBoost
-            present_classes = np.unique(y_tr_bal)
-            le = LabelEncoder().fit(present_classes)
-            y_tr_bal_int = le.transform(y_tr_bal)
-            y_te_int = le.transform([cls if cls in present_classes else 'Q' for cls in y_te])
-            xgb = XGBClassifier(tree_method="hist", max_depth=6, learning_rate=0.1, n_estimators=400,
-                                subsample=0.8, colsample_bytree=0.8, objective="multi:softprob",
-                                eval_metric="mlogloss", num_class=len(present_classes), random_state=RANDOM)
-            xgb.fit(X_tr_bal, y_tr_bal_int)
-            pred_xgb_int = xgb.predict(X_te)
-            pred_xgb = le.inverse_transform(pred_xgb_int)
-            
-            # Display accuracy and classification report
-            st.write(f"XGBoost Accuracy: {accuracy_score(y_te, pred_xgb):.4f}")
-            report = classification_report(y_te, pred_xgb, labels=present_classes, target_names=present_classes, zero_division=0, output_dict=True)
-            st.dataframe(pd.DataFrame(report).transpose())
+                X_ds = resample(X_raw, 32, axis=1)
+                scaler = StandardScaler()
+                X_ds = scaler.fit_transform(X_ds)
+                X_tr, X_te, y_tr, y_te = train_test_split(X_ds, y_raw, test_size=0.3, stratify=y_raw, random_state=RANDOM)
+                
+                # SMOTE Balancing
+                cnt = Counter(y_tr)
+                m = min(cnt.values())
+                if m < 2:
+                    X_tr_bal, y_tr_bal = X_tr, y_tr
+                else:
+                    k = max(1, min(5, m-1))
+                    X_tr_bal, y_tr_bal = SMOTE(k_neighbors=k, random_state=RANDOM).fit_resample(X_tr, y_tr)
+                
+                # Train XGBoost
+                present_classes = np.unique(y_tr_bal)
+                le = LabelEncoder().fit(present_classes)
+                y_tr_bal_int = le.transform(y_tr_bal)
+                y_te_int = le.transform([cls if cls in present_classes else 'Q' for cls in y_te])
+                xgb = XGBClassifier(tree_method="hist", max_depth=6, learning_rate=0.1, n_estimators=400,
+                                    subsample=0.8, colsample_bytree=0.8, objective="multi:softprob",
+                                    eval_metric="mlogloss", num_class=len(present_classes), random_state=RANDOM)
+                xgb.fit(X_tr_bal, y_tr_bal_int)
+                pred_xgb_int = xgb.predict(X_te)
+                pred_xgb = le.inverse_transform(pred_xgb_int)
+                
+                # Display accuracy and classification report
+                st.write(f"XGBoost Accuracy: {accuracy_score(y_te, pred_xgb):.4f}")
+                report = classification_report(y_te, pred_xgb, labels=present_classes, target_names=present_classes, zero_division=0, output_dict=True)
+                st.dataframe(pd.DataFrame(report).transpose())
 
-            # Confusion Matrix
-            st.subheader("Confusion Matrix (XGBoost)")
-            cm = confusion_matrix(y_te, pred_xgb, labels=['A', 'V', 'N'])
-            fig, ax = plt.subplots()
-            ConfusionMatrixDisplay(cm, display_labels=['PAC', 'PVC', 'Normal']).plot(cmap='Blues', ax=ax)
-            st.pyplot(fig)
+                # Confusion Matrix
+                st.subheader("Confusion Matrix (XGBoost)")
+                cm = confusion_matrix(y_te, pred_xgb, labels=['A', 'V', 'N'])
+                fig, ax = plt.subplots()
+                ConfusionMatrixDisplay(cm, display_labels=['PAC', 'PVC', 'Normal']).plot(cmap='Blues', ax=ax)
+                st.pyplot(fig)
 
-            # Step 4: SHAP Explanation
-            st.subheader("SHAP Feature Importance (XGBoost)")
-            explainer_xgb = shap.TreeExplainer(xgb)
-            shap_values_xgb = explainer_xgb.shap_values(X_te[:50])  # Limit for speed
-            fig, ax = plt.subplots(figsize=(10, 6))
-            shap.summary_plot(shap_values_xgb, X_te[:50], feature_names=[f"Sample_{i}" for i in range(32)], class_names=present_classes, plot_type="bar")
-            st.pyplot(fig)
+                # SHAP Explanation
+                st.subheader("SHAP Feature Importance (XGBoost)")
+                explainer_xgb = shap.TreeExplainer(xgb)
+                shap_values_xgb = explainer_xgb.shap_values(X_te[:50])  # Limit for speed
+                fig, ax = plt.subplots(figsize=(10, 6))
+                shap.summary_plot(shap_values_xgb, X_te[:50], feature_names=[f"Sample_{i}" for i in range(32)], class_names=present_classes, plot_type="bar")
+                st.pyplot(fig)
+        except Exception as e:
+            st.error(f"ML processing failed: {e}")
 
         # Clean up temporary files
         try:
             os.remove(f"{record_name}.dat")
             os.remove(f"{record_name}.atr")
+            if os.path.exists(f"{record_name}.hea"):
+                os.remove(f"{record_name}.hea")
         except:
             pass
 
 else:
     st.write("Please upload both .dat and .atr files to proceed.")
+```
